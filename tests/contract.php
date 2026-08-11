@@ -4,10 +4,12 @@ declare(strict_types=1);
 $root = dirname(__DIR__);
 $GLOBALS['_test_hooks'] = [];
 $GLOBALS['_test_locale'] = 'en';
+$GLOBALS['_test_settings'] = [];
 define('BACKEND_PATH', '/tmp');
 define('PUBLIC_PATH', $root);
 function __(string $value, string $scope = 'default'): string { return $value; }
 function get_locale(): string { return (string)$GLOBALS['_test_locale']; }
+function settings_get(PDO $pdo, string $key, mixed $default = null): mixed { return $GLOBALS['_test_settings'][$key] ?? $default; }
 function add_filter(string $name, callable $callback): void { $GLOBALS['_test_hooks'][$name][] = $callback; }
 function add_action(string $name, callable $callback): void { $GLOBALS['_test_hooks'][$name][] = $callback; }
 function register_frontend_route(string $name, callable|string $callback): void { $GLOBALS['_test_routes'][$name] = $callback; }
@@ -22,13 +24,15 @@ $check = static function (bool $passed, string $message) use (&$failures): void 
 $manifest = json_decode((string)file_get_contents($root . '/plugin.json'), true, 512, JSON_THROW_ON_ERROR);
 $manifestObject = json_decode((string)file_get_contents($root . '/plugin.json'), false, 512, JSON_THROW_ON_ERROR);
 $check(($manifest['name'] ?? null) === 'pwa', 'plugin slug is pwa');
-$check(($manifest['version'] ?? null) === '1.0.0', 'plugin version is 1.0.0');
+$check(($manifest['version'] ?? null) === '1.1.0', 'plugin version is 1.1.0');
 $check(($manifest['requires']['jyavani'] ?? null) === '>=2.3.60', 'Jyavani requirement is explicit');
 $check(in_array('mbstring', $manifest['requires']['extensions'] ?? [], true), 'mbstring requirement is explicit');
+$check(in_array('gd', $manifest['requires']['extensions'] ?? [], true), 'GD requirement is explicit');
 $check(array_key_exists('plugins', $manifest['requires'] ?? []), 'requires.plugins exists');
 $check(($manifestObject->requires->plugins ?? null) instanceof stdClass, 'requires.plugins uses the dependency-map object contract');
 $check(!array_key_exists('assets', $manifest), 'admin CSS and JS are not global plugin assets');
 $check(($manifest['github_url'] ?? null) === 'https://github.com/adammuizweb/pwa', 'repository URL is canonical');
+$check(($manifest['admin']['nav'][0]['label'] ?? null) === 'PWA', 'settings navigation uses the short PWA label');
 $check(isset($GLOBALS['_test_routes']['manifest.webmanifest']), 'dynamic manifest route is registered');
 $check(isset($GLOBALS['_test_hooks']['service_worker_script']), 'service worker contribution is registered');
 $check(isset($GLOBALS['_test_hooks']['web_manifest_url']), 'Core web_manifest_url filter is registered');
@@ -65,15 +69,53 @@ $check(($defaults['icon_192_url'] ?? '') === '/static/plugins/pwa/icon-192.png'
     && ($defaults['icon_512_url'] ?? '') === '/static/plugins/pwa/icon-512.png', 'Browser Push shared *_url setting contract is present');
 $webManifest = jy_pwa_manifest($testPdo);
 $check(isset($webManifest['id'], $webManifest['start_url'], $webManifest['scope']), 'web manifest has explicit identity and launch paths');
-$iconErrors = [];
-jy_pwa_validate_media_icon($testPdo, 0, '/assets/icons/icon-192.png', 192, 'Icon', false, $iconErrors);
-$check($iconErrors === [], 'id=0 local PNG is inspected instead of trusted by suffix');
-$iconErrors = [];
-jy_pwa_validate_media_icon($testPdo, 0, '/assets/icons/icon-192.png', 512, 'Icon', false, $iconErrors);
-$check($iconErrors !== [], 'id=0 local PNG with wrong dimensions is rejected');
-$iconErrors = [];
-jy_pwa_validate_media_icon($testPdo, 0, '/assets/icons/missing.png', 192, 'Icon', false, $iconErrors);
-$check($iconErrors !== [], 'id=0 inaccessible PNG URL is rejected');
+$GLOBALS['_test_settings']['pwa_icon_192_url'] = '/assets/icons/icon-192.png';
+$legacySettings = jy_pwa_settings($testPdo);
+$check($legacySettings['icon_source_url'] === '/assets/icons/icon-192.png', 'a legacy custom icon is adopted as the generator source');
+$check($legacySettings['icon_180_url'] === JY_PWA_DEFAULT_ICON_180, 'legacy icon variants remain unchanged before explicit regeneration');
+$GLOBALS['_test_settings'] = [];
+$sourceErrors = [];
+$source = jy_pwa_validate_media_source($testPdo, 0, '/assets/icons/icon-192.png', $sourceErrors);
+$check($sourceErrors === [] && is_string($source['file'] ?? null), 'same-origin images of arbitrary dimensions are accepted as icon sources');
+$sourceErrors = [];
+jy_pwa_validate_media_source($testPdo, 0, '/assets/icons/missing.png', $sourceErrors);
+$check($sourceErrors !== [], 'inaccessible source image URLs are rejected');
+
+$opaquePng = static function (string $file): bool {
+    $data = (string)file_get_contents($file);
+    $colorType = strlen($data) > 25 ? ord($data[25]) : -1;
+    return in_array($colorType, [0, 2, 3], true) && !str_contains($data, 'tRNS');
+};
+$generatedDirectory = sys_get_temp_dir() . '/jy-pwa-icons-' . bin2hex(random_bytes(6));
+$check(mkdir($generatedDirectory, 0700), 'temporary generated icon directory is created');
+$wideSource = imagecreatetruecolor(40, 20);
+$red = imagecolorallocate($wideSource, 220, 20, 20);
+imagefill($wideSource, 0, 0, $red);
+$wideSourceFile = $generatedDirectory . '/source.png';
+imagepng($wideSource, $wideSourceFile);
+imagedestroy($wideSource);
+$containUrls = jy_pwa_generate_icons($wideSourceFile, 'contain', '#123456', $generatedDirectory, '/generated');
+foreach (['icon_180_url' => 180, 'icon_192_url' => 192, 'icon_512_url' => 512, 'icon_maskable_url' => 512] as $key => $size) {
+    $file = $generatedDirectory . '/' . basename($containUrls[$key]);
+    $info = getimagesize($file);
+    $check(is_array($info) && [$info[0], $info[1], $info['mime']] === [$size, $size, 'image/png'], $key . ' is generated at the required PNG size');
+    $check($opaquePng($file), $key . ' is generated as an opaque PNG');
+}
+$containImage = imagecreatefrompng($generatedDirectory . '/' . basename($containUrls['icon_192_url']));
+$corner = imagecolorsforindex($containImage, imagecolorat($containImage, 2, 2));
+$center = imagecolorsforindex($containImage, imagecolorat($containImage, 96, 96));
+$check([$corner['red'], $corner['green'], $corner['blue']] === [18, 52, 86], 'contain mode pads with the configured background color');
+$check($center['red'] > 180 && $center['green'] < 60, 'contain mode keeps source content centered');
+imagedestroy($containImage);
+$cropUrls = jy_pwa_generate_icons($wideSourceFile, 'crop', '#123456', $generatedDirectory, '/generated');
+$maskableImage = imagecreatefrompng($generatedDirectory . '/' . basename($cropUrls['icon_maskable_url']));
+$maskableCorner = imagecolorsforindex($maskableImage, imagecolorat($maskableImage, 2, 2));
+$maskableSafeEdge = imagecolorsforindex($maskableImage, imagecolorat($maskableImage, 100, 100));
+$check([$maskableCorner['red'], $maskableCorner['green'], $maskableCorner['blue']] === [18, 52, 86]
+    && [$maskableSafeEdge['red'], $maskableSafeEdge['green'], $maskableSafeEdge['blue']] === [18, 52, 86], 'maskable output preserves the central circular safe zone');
+imagedestroy($maskableImage);
+foreach (glob($generatedDirectory . '/*') ?: [] as $file) unlink($file);
+rmdir($generatedDirectory);
 
 foreach ($manifest['static']['copy'] ?? [] as $entry) {
     $check(str_starts_with((string)($entry['to'] ?? ''), 'static/plugins/pwa/'), 'static destination is in the pwa namespace');
@@ -84,11 +126,6 @@ foreach (['icon.png' => [512, 512], 'assets/icons/icon-180.png' => [180, 180], '
     $size = is_file($root . '/' . $file) ? getimagesize($root . '/' . $file) : false;
     $check(is_array($size) && [$size[0], $size[1]] === $expected && ($size['mime'] ?? '') === 'image/png', $file . ' has the expected PNG dimensions');
 }
-$opaquePng = static function (string $file): bool {
-    $data = (string)file_get_contents($file);
-    $colorType = strlen($data) > 25 ? ord($data[25]) : -1;
-    return in_array($colorType, [0, 2, 3], true) && !str_contains($data, 'tRNS');
-};
 $check($opaquePng($root . '/assets/icons/icon-180.png'), 'Apple icon is opaque and full-bleed');
 $check($opaquePng($root . '/assets/icons/icon-maskable-512.png'), 'maskable icon is opaque and full-bleed');
 

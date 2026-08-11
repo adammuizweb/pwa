@@ -3,12 +3,14 @@ declare(strict_types=1);
 
 if (!defined('BACKEND_PATH')) return;
 
-const JY_PWA_VERSION = '1.0.0';
+const JY_PWA_VERSION = '1.1.0';
 const JY_PWA_STATIC = '/static/plugins/pwa';
 const JY_PWA_DEFAULT_ICON_180 = JY_PWA_STATIC . '/icon-180.png';
 const JY_PWA_DEFAULT_ICON_192 = JY_PWA_STATIC . '/icon-192.png';
 const JY_PWA_DEFAULT_ICON_512 = JY_PWA_STATIC . '/icon-512.png';
 const JY_PWA_DEFAULT_ICON_MASKABLE = JY_PWA_STATIC . '/icon-maskable-512.png';
+const JY_PWA_MAX_SOURCE_PIXELS = 12000000;
+const JY_PWA_MAX_SOURCE_BYTES = 16 * 1024 * 1024;
 
 function jy_pwa_h(string $value): string
 {
@@ -64,6 +66,9 @@ function jy_pwa_defaults(PDO $pdo): array
         'orientation' => 'any',
         'theme_color' => '#111827',
         'background_color' => '#ffffff',
+        'icon_source_url' => '',
+        'icon_source_id' => '0',
+        'icon_mode' => 'crop',
         'icon_180_url' => JY_PWA_DEFAULT_ICON_180,
         'icon_180_id' => '0',
         'icon_192_url' => JY_PWA_DEFAULT_ICON_192,
@@ -80,6 +85,20 @@ function jy_pwa_settings(PDO $pdo): array
     $settings = jy_pwa_defaults($pdo);
     foreach ($settings as $key => $default) {
         $settings[$key] = jy_pwa_setting($pdo, $key, $default);
+    }
+    // Preserve v1.0 icon settings until the administrator changes generator inputs.
+    if ($settings['icon_source_url'] === '') {
+        foreach ([
+            'icon_512' => JY_PWA_DEFAULT_ICON_512,
+            'icon_maskable' => JY_PWA_DEFAULT_ICON_MASKABLE,
+            'icon_192' => JY_PWA_DEFAULT_ICON_192,
+            'icon_180' => JY_PWA_DEFAULT_ICON_180,
+        ] as $key => $default) {
+            if ($settings[$key . '_url'] === '' || $settings[$key . '_url'] === $default) continue;
+            $settings['icon_source_url'] = $settings[$key . '_url'];
+            $settings['icon_source_id'] = $settings[$key . '_id'];
+            break;
+        }
     }
     return $settings;
 }
@@ -130,12 +149,12 @@ function jy_pwa_normalize_path_url(string $value, bool $directory = false): ?str
     return $value;
 }
 
-function jy_pwa_normalize_png_url(string $value): ?string
+function jy_pwa_normalize_image_url(string $value): ?string
 {
     $url = jy_pwa_normalize_path_url($value);
     if ($url === null) return null;
     $path = strtolower((string)(parse_url($url, PHP_URL_PATH) ?? ''));
-    if (!str_ends_with($path, '.png') || str_starts_with($path, '/private/')) return null;
+    if ($path === '' || str_starts_with($path, '/private/')) return null;
     return $url;
 }
 
@@ -201,47 +220,244 @@ function jy_pwa_validate_icon_file(string $url, int $size, string $label, array 
     return true;
 }
 
-function jy_pwa_validate_media_icon(PDO $pdo, int $id, string $url, int $size, string $label, bool $optional, array &$errors): array
+function jy_pwa_validate_media_source(PDO $pdo, int $id, string $url, array &$errors): array
 {
-    if ($optional && $id < 1 && trim($url) === '') return ['id' => '0', 'url' => ''];
+    if ($id < 1 && trim($url) === '') return ['id' => '0', 'url' => '', 'file' => null];
 
     if ($id > 0) {
         try {
-            $stmt = $pdo->prepare('SELECT url, mime, ext, width, height, visibility, storage_disk, access_scope FROM media WHERE id = :id LIMIT 1');
+            $stmt = $pdo->prepare('SELECT url, mime, visibility, storage_disk, access_scope FROM media WHERE id = :id LIMIT 1');
             $stmt->execute([':id' => $id]);
             $media = $stmt->fetch(PDO::FETCH_ASSOC);
         } catch (Throwable $error) {
             $media = false;
         }
         if (!is_array($media)) {
-            $errors[] = jy_pwa_t('%s Media Library item was not found.', $label);
-            return ['id' => (string)$id, 'url' => $url];
+            $errors[] = jy_pwa_t('The Media Library image was not found.');
+            return ['id' => (string)$id, 'url' => $url, 'file' => null];
         }
-        if (strtolower((string)($media['mime'] ?? '')) !== 'image/png'
-            || strtolower((string)($media['ext'] ?? '')) !== 'png') {
-            $errors[] = jy_pwa_t('%s must be a PNG image.', $label);
+        if (!str_starts_with(strtolower((string)($media['mime'] ?? '')), 'image/')) {
+            $errors[] = jy_pwa_t('Choose an image from the Media Library.');
         }
         if ((string)($media['visibility'] ?? 'public') !== 'public'
             || (string)($media['storage_disk'] ?? 'public') !== 'public'
             || (string)($media['access_scope'] ?? 'public') !== 'public') {
-            $errors[] = jy_pwa_t('%s must be public media.', $label);
-        }
-        if ((int)($media['width'] ?? 0) !== $size || (int)($media['height'] ?? 0) !== $size) {
-            $errors[] = jy_pwa_t('%s must be exactly %dx%d pixels.', $label, $size, $size);
+            $errors[] = jy_pwa_t('The source image must be public media.');
         }
         $url = (string)($media['url'] ?? '');
     }
 
-    $normalized = jy_pwa_normalize_png_url($url);
+    $normalized = jy_pwa_normalize_image_url($url);
     if ($normalized === null) {
-        $errors[] = jy_pwa_t('%s must use a same-origin public PNG URL.', $label);
+        $errors[] = jy_pwa_t('The source image must use a same-origin public URL.');
     } elseif (jy_pwa_sensitive_path($pdo, $normalized)) {
-        $errors[] = jy_pwa_t('%s cannot use an admin, authentication, private, or API URL.', $label);
+        $errors[] = jy_pwa_t('The source image cannot use an admin, authentication, private, or API URL.');
     } else {
         $url = $normalized;
-        jy_pwa_validate_icon_file($url, $size, $label, $errors);
+        $file = jy_pwa_public_icon_file($url);
+        if ($file === null || !is_readable($file)) {
+            $errors[] = jy_pwa_t('The source image must resolve to a readable file in the public web root.');
+        } else {
+            $image = @getimagesize($file);
+            $width = is_array($image) ? (int)($image[0] ?? 0) : 0;
+            $height = is_array($image) ? (int)($image[1] ?? 0) : 0;
+            if ($width < 1 || $height < 1 || !str_starts_with(strtolower((string)($image['mime'] ?? '')), 'image/')) {
+                $errors[] = jy_pwa_t('The source image is not a supported image file.');
+            } elseif (!jy_pwa_source_fits_limits($file, $width, $height)) {
+                $errors[] = jy_pwa_t('The source image is too large to process safely.');
+            } else {
+                return ['id' => (string)max(0, $id), 'url' => $url, 'file' => $file];
+            }
+        }
     }
-    return ['id' => (string)max(0, $id), 'url' => $url];
+    return ['id' => (string)max(0, $id), 'url' => $url, 'file' => null];
+}
+
+function jy_pwa_memory_limit_bytes(): int
+{
+    $value = strtolower(trim((string)ini_get('memory_limit')));
+    if ($value === '' || $value === '-1') return PHP_INT_MAX;
+    $number = (float)$value;
+    return (int)round($number * match (substr($value, -1)) {
+        'g' => 1024 ** 3,
+        'm' => 1024 ** 2,
+        'k' => 1024,
+        default => 1,
+    });
+}
+
+function jy_pwa_source_fits_limits(string $file, int $width, int $height): bool
+{
+    $fileSize = @filesize($file);
+    if ($fileSize === false || $fileSize > JY_PWA_MAX_SOURCE_BYTES || $width < 1 || $height < 1
+        || $width * $height > JY_PWA_MAX_SOURCE_PIXELS) return false;
+    $memoryLimit = jy_pwa_memory_limit_bytes();
+    if ($memoryLimit === PHP_INT_MAX) return true;
+    $available = max(0, $memoryLimit - memory_get_usage(true));
+    return $width * $height * 6 + 8 * 1024 * 1024 <= $available;
+}
+
+function jy_pwa_generated_directory(): string
+{
+    if (!defined('PUBLIC_PATH')) throw new RuntimeException('Public web root is unavailable.');
+    $public = realpath(PUBLIC_PATH);
+    $pluginStatic = rtrim(PUBLIC_PATH, '/\\') . '/static/plugins/pwa';
+    $pluginReal = realpath($pluginStatic);
+    if ($public === false || $pluginReal === false || !is_dir($pluginReal)
+        || ($pluginReal !== $public && !str_starts_with($pluginReal, $public . DIRECTORY_SEPARATOR))) {
+        throw new RuntimeException('PWA static directory is unavailable.');
+    }
+    $directory = $pluginReal . '/generated';
+    if (is_link($directory) || (!is_dir($directory) && !mkdir($directory, 0755))) {
+        throw new RuntimeException('Could not create the generated icon directory.');
+    }
+    $real = realpath($directory);
+    if ($real === false || !str_starts_with($real, $pluginReal . DIRECTORY_SEPARATOR) || !is_writable($real)) {
+        throw new RuntimeException('Generated icon directory is not writable.');
+    }
+    return $real;
+}
+
+function jy_pwa_render_icon(GdImage $source, int $size, string $mode, string $background, bool $maskable = false): GdImage
+{
+    if (!in_array($mode, ['crop', 'contain'], true) || jy_pwa_normalize_color($background) !== $background) {
+        throw new InvalidArgumentException('Invalid icon generation options.');
+    }
+    $canvas = imagecreatetruecolor($size, $size);
+    if (!$canvas instanceof GdImage) throw new RuntimeException('Could not create an icon canvas.');
+    [$red, $green, $blue] = sscanf($background, '#%02x%02x%02x');
+    $color = imagecolorallocate($canvas, (int)$red, (int)$green, (int)$blue);
+    imagefill($canvas, 0, 0, $color);
+    imagealphablending($canvas, true);
+
+    $sourceWidth = imagesx($source);
+    $sourceHeight = imagesy($source);
+    // A square with this side length fits inside the maskable 40%-radius circle.
+    $box = $maskable ? (int)floor($size * 0.8 / sqrt(2)) : $size;
+    $surface = imagecreatetruecolor($box, $box);
+    if (!$surface instanceof GdImage) {
+        imagedestroy($canvas);
+        throw new RuntimeException('Could not create an icon surface.');
+    }
+    $surfaceColor = imagecolorallocate($surface, (int)$red, (int)$green, (int)$blue);
+    imagefill($surface, 0, 0, $surfaceColor);
+    imagealphablending($surface, true);
+    $scale = $mode === 'contain'
+        ? min($box / $sourceWidth, $box / $sourceHeight)
+        : max($box / $sourceWidth, $box / $sourceHeight);
+    $targetWidth = max(1, (int)round($sourceWidth * $scale));
+    $targetHeight = max(1, (int)round($sourceHeight * $scale));
+    $targetX = (int)floor(($box - $targetWidth) / 2);
+    $targetY = (int)floor(($box - $targetHeight) / 2);
+    if (!imagecopyresampled($surface, $source, $targetX, $targetY, 0, 0, $targetWidth, $targetHeight, $sourceWidth, $sourceHeight)
+        || !imagecopy($canvas, $surface, (int)floor(($size - $box) / 2), (int)floor(($size - $box) / 2), 0, 0, $box, $box)) {
+        imagedestroy($surface);
+        imagedestroy($canvas);
+        throw new RuntimeException('Could not resize the source image.');
+    }
+    imagedestroy($surface);
+    return $canvas;
+}
+
+function jy_pwa_generate_icons(string $sourceFile, string $mode, string $background, string $directory, string $urlBase = JY_PWA_STATIC . '/generated'): array
+{
+    $info = @getimagesize($sourceFile);
+    if (!is_array($info) || !jy_pwa_source_fits_limits($sourceFile, (int)$info[0], (int)$info[1])) {
+        throw new RuntimeException('The source image is too large or invalid.');
+    }
+    $loader = match ((int)($info[2] ?? 0)) {
+        IMAGETYPE_JPEG => 'imagecreatefromjpeg',
+        IMAGETYPE_PNG => 'imagecreatefrompng',
+        IMAGETYPE_GIF => 'imagecreatefromgif',
+        IMAGETYPE_WEBP => 'imagecreatefromwebp',
+        IMAGETYPE_AVIF => 'imagecreatefromavif',
+        default => '',
+    };
+    $source = $loader !== '' && function_exists($loader) ? @$loader($sourceFile) : false;
+    if (!$source instanceof GdImage) throw new RuntimeException('The server cannot decode the source image.');
+
+    $sourceHash = hash_file('sha256', $sourceFile);
+    if (!is_string($sourceHash)) {
+        imagedestroy($source);
+        throw new RuntimeException('Could not hash the source image.');
+    }
+    $digest = substr(hash('sha256', "pwa-icons-v1\0" . $mode . "\0" . $background . "\0" . $sourceHash), 0, 16);
+    $specifications = [
+        'icon_180' => [180, false],
+        'icon_192' => [192, false],
+        'icon_512' => [512, false],
+        'icon_maskable' => [512, true],
+    ];
+    $urls = [];
+    try {
+        foreach ($specifications as $key => [$size, $maskable]) {
+            $suffix = $maskable ? 'maskable-512' : (string)$size;
+            $filename = 'icon-' . $suffix . '-' . $digest . '.png';
+            $destination = rtrim($directory, '/\\') . '/' . $filename;
+            $existing = is_file($destination) ? @getimagesize($destination) : false;
+            if (is_file($destination) && (!is_array($existing) || (int)$existing[0] !== $size || (int)$existing[1] !== $size
+                || strtolower((string)($existing['mime'] ?? '')) !== 'image/png')) {
+                @unlink($destination);
+            }
+            if (!is_file($destination)) {
+                $icon = jy_pwa_render_icon($source, $size, $mode, $background, $maskable);
+                $temporary = tempnam($directory, '.pwa-');
+                if ($temporary === false || !imagepng($icon, $temporary, 6)) {
+                    imagedestroy($icon);
+                    if (is_string($temporary)) @unlink($temporary);
+                    throw new RuntimeException('Could not write a generated icon.');
+                }
+                imagedestroy($icon);
+                chmod($temporary, 0644);
+                if (!rename($temporary, $destination)) {
+                    @unlink($temporary);
+                    throw new RuntimeException('Could not publish a generated icon.');
+                }
+            }
+            $urls[$key . '_url'] = rtrim($urlBase, '/') . '/' . $filename;
+        }
+    } finally {
+        imagedestroy($source);
+    }
+    return $urls;
+}
+
+function jy_pwa_prune_generated_icons(array $activeUrls, int $retainedSets = 3): void
+{
+    $directory = jy_pwa_generated_directory();
+    $sets = [];
+    foreach (glob($directory . '/icon-*.png') ?: [] as $file) {
+        if (!preg_match('/^icon-(?:180|192|512|maskable-512)-([a-f0-9]{16})\.png$/', basename($file), $match)) continue;
+        $sets[$match[1]]['files'][] = $file;
+        $sets[$match[1]]['time'] = max((int)($sets[$match[1]]['time'] ?? 0), (int)filemtime($file));
+    }
+    uasort($sets, static fn(array $left, array $right): int => $right['time'] <=> $left['time']);
+    $keep = [];
+    foreach ($activeUrls as $url) {
+        if (preg_match('/-([a-f0-9]{16})\.png$/', (string)parse_url((string)$url, PHP_URL_PATH), $match)) $keep[$match[1]] = true;
+    }
+    foreach (array_keys($sets) as $digest) {
+        if (count($keep) >= max(1, $retainedSets)) break;
+        $keep[$digest] = true;
+    }
+    foreach ($sets as $digest => $set) {
+        if (isset($keep[$digest])) continue;
+        foreach ($set['files'] as $file) @unlink($file);
+    }
+}
+
+function jy_pwa_uninstall_cleanup(string $name): void
+{
+    if ($name !== 'pwa') return;
+    try {
+        $directory = jy_pwa_generated_directory();
+        foreach (glob($directory . '/icon-*.png') ?: [] as $file) {
+            if (preg_match('/^icon-(?:180|192|512|maskable-512)-[a-f0-9]{16}\.png$/', basename($file))) @unlink($file);
+        }
+        @rmdir($directory);
+    } catch (Throwable $error) {
+        error_log('[pwa] Generated icon cleanup failed: ' . $error->getMessage());
+    }
 }
 
 function jy_pwa_manifest(PDO $pdo): array
@@ -408,3 +624,4 @@ add_action('jy_head', 'jy_pwa_apple_metadata');
 add_action('jy_footer', 'jy_pwa_registration_script');
 add_action('admin_head', 'jy_pwa_admin_head');
 add_action('admin_footer', 'jy_pwa_admin_footer');
+add_action('plugin_uninstall', 'jy_pwa_uninstall_cleanup');

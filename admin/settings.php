@@ -63,24 +63,57 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         else $candidate[$field] = $normalized;
     }
 
-    $icons = [
-        'icon_180' => [180, jy_pwa_t('Apple icon'), false],
-        'icon_192' => [192, jy_pwa_t('192px icon'), false],
-        'icon_512' => [512, jy_pwa_t('512px icon'), false],
-        'icon_maskable' => [512, jy_pwa_t('Maskable icon'), true],
-    ];
-    foreach ($icons as $key => [$size, $label, $optional]) {
-        $result = jy_pwa_validate_media_icon(
-            $pdo,
-            max(0, (int)($_POST[$key . '_id'] ?? 0)),
-            trim((string)($_POST[$key . '_url'] ?? '')),
-            $size,
-            $label,
-            $optional,
-            $errors
-        );
-        $candidate[$key . '_id'] = $result['id'];
-        $candidate[$key . '_url'] = $result['url'];
+    $candidate['icon_mode'] = trim((string)($_POST['icon_mode'] ?? 'crop'));
+    if (!in_array($candidate['icon_mode'], ['crop', 'contain'], true)) {
+        $errors[] = jy_pwa_t('Invalid icon fit mode.');
+    }
+    $source = jy_pwa_validate_media_source(
+        $pdo,
+        max(0, (int)($_POST['icon_source_id'] ?? 0)),
+        trim((string)($_POST['icon_source_url'] ?? '')),
+        $errors
+    );
+    $candidate['icon_source_id'] = $source['id'];
+    $candidate['icon_source_url'] = $source['url'];
+    $regenerateIcons = (string)($_POST['regenerate_icons'] ?? '') === '1'
+        || $candidate['icon_source_id'] !== $settings['icon_source_id']
+        || $candidate['icon_source_url'] !== $settings['icon_source_url']
+        || $candidate['icon_mode'] !== $settings['icon_mode']
+        || $candidate['background_color'] !== $settings['background_color'];
+
+    if ($errors === []) {
+        try {
+            if (!$regenerateIcons) {
+                $generated = [];
+                foreach (['icon_180', 'icon_192', 'icon_512', 'icon_maskable'] as $key) {
+                    $generated[$key . '_url'] = $settings[$key . '_url'];
+                    $candidate[$key . '_id'] = $settings[$key . '_id'];
+                }
+            } elseif ($source['file'] === null) {
+                $generated = [
+                    'icon_180_url' => JY_PWA_DEFAULT_ICON_180,
+                    'icon_192_url' => JY_PWA_DEFAULT_ICON_192,
+                    'icon_512_url' => JY_PWA_DEFAULT_ICON_512,
+                    'icon_maskable_url' => JY_PWA_DEFAULT_ICON_MASKABLE,
+                ];
+            } else {
+                $generated = jy_pwa_generate_icons(
+                    $source['file'],
+                    $candidate['icon_mode'],
+                    $candidate['background_color'],
+                    jy_pwa_generated_directory()
+                );
+            }
+            $candidate = array_merge($candidate, $generated);
+            if ($regenerateIcons) {
+                foreach (['icon_180', 'icon_192', 'icon_512', 'icon_maskable'] as $key) {
+                    $candidate[$key . '_id'] = $source['id'];
+                }
+            }
+        } catch (Throwable $error) {
+            error_log('[pwa] Icon generation failed: ' . $error->getMessage());
+            $errors[] = jy_pwa_t('The PWA icons could not be generated. Check that GD is available and the generated icon directory is writable.');
+        }
     }
 
     $settings = array_merge($settings, $candidate);
@@ -94,6 +127,16 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             }
             $pdo->commit();
             $saved = true;
+            try {
+                jy_pwa_prune_generated_icons([
+                    $candidate['icon_180_url'],
+                    $candidate['icon_192_url'],
+                    $candidate['icon_512_url'],
+                    $candidate['icon_maskable_url'],
+                ]);
+            } catch (Throwable $cleanupError) {
+                error_log('[pwa] Generated icon pruning failed: ' . $cleanupError->getMessage());
+            }
         } catch (Throwable $error) {
             if ($pdo->inTransaction()) $pdo->rollBack();
             error_log('[pwa] Settings save failed: ' . $error->getMessage());
@@ -120,7 +163,7 @@ $workerUrl = '/sw.js';
       <h2><?= jy_pwa_h(jy_pwa_t('Progressive Web App')) ?></h2>
       <p><?= jy_pwa_h(jy_pwa_t('Configure the install experience, app icons, colors, and offline fallback for the public site.')) ?></p>
     </div>
-    <div class="pwa-hero-mark"><img src="<?= JY_PWA_STATIC ?>/icon-192.png" alt=""></div>
+    <div class="pwa-hero-mark"><img src="<?= jy_pwa_h($settings['icon_192_url']) ?>" alt=""></div>
   </header>
 
   <?php if ($saved): ?><div class="pwa-notice pwa-notice--success" role="status"><?= jy_pwa_h(jy_pwa_t('PWA settings saved. The service worker cache revision was updated automatically.')) ?></div><?php endif; ?>
@@ -134,6 +177,7 @@ $workerUrl = '/sw.js';
 
   <form method="post" class="pwa-form" novalidate>
     <input type="hidden" name="csrf_token" value="<?= jy_pwa_h(function_exists('csrf_token') ? csrf_token() : '') ?>">
+    <input type="hidden" name="regenerate_icons" value="0" data-regenerate-icons>
 
     <section class="pwa-panel">
       <div class="pwa-panel-title"><span>01</span><div><h3><?= jy_pwa_h(jy_pwa_t('App identity')) ?></h3><p><?= jy_pwa_h(jy_pwa_t('Names shown in browser install prompts and on the home screen.')) ?></p></div></div>
@@ -165,28 +209,30 @@ $workerUrl = '/sw.js';
     </section>
 
     <section class="pwa-panel">
-      <div class="pwa-panel-title"><span>04</span><div><h3><?= jy_pwa_h(jy_pwa_t('PNG app icons')) ?></h3><p><?= jy_pwa_h(jy_pwa_t('Choose public Media Library PNGs at the exact requested dimensions, or keep the bundled defaults.')) ?></p></div></div>
-      <div class="pwa-icons">
-        <?php
-        $iconFields = [
-            'icon_180' => [jy_pwa_t('Apple touch icon'), '180x180', false],
-            'icon_192' => [jy_pwa_t('Standard icon'), '192x192', false],
-            'icon_512' => [jy_pwa_t('Large icon'), '512x512', false],
-            'icon_maskable' => [jy_pwa_t('Maskable icon'), '512x512', true],
-        ];
-        foreach ($iconFields as $key => [$label, $dimensions, $optional]): ?>
-          <article class="pwa-icon-field" data-icon-field
-                   data-size="<?= (int)explode('x', $dimensions)[0] ?>"
-                   data-optional-label="<?= jy_pwa_h(jy_pwa_t('Optional')) ?>"
-                   data-png-error="<?= jy_pwa_h(jy_pwa_t('Choose a PNG image.')) ?>"
-                   data-size-error="<?= jy_pwa_h(jy_pwa_t('Choose an image that is exactly %s pixels.', $dimensions)) ?>">
-            <div class="pwa-icon-preview"><?php if ($settings[$key . '_url'] !== ''): ?><img src="<?= jy_pwa_h($settings[$key . '_url']) ?>" alt=""><?php else: ?><span><?= jy_pwa_h(jy_pwa_t('Optional')) ?></span><?php endif; ?></div>
-            <div class="pwa-icon-copy"><strong><?= jy_pwa_h($label) ?></strong><small><?= $dimensions ?> PNG<?= $optional ? ' - ' . jy_pwa_h(jy_pwa_t('optional')) : '' ?></small>
-              <input type="hidden" name="<?= $key ?>_id" value="<?= (int)$settings[$key . '_id'] ?>" data-media-id>
-              <input type="text" name="<?= $key ?>_url" value="<?= jy_pwa_h($settings[$key . '_url']) ?>" <?= $optional ? '' : 'required' ?> data-media-url aria-label="<?= jy_pwa_h($label . ' URL') ?>">
-              <div class="pwa-icon-actions"><button class="pwa-button pwa-button--secondary" type="button" data-choose-media><?= jy_pwa_h(jy_pwa_t('Choose PNG')) ?></button><?php if ($optional): ?><button class="pwa-button pwa-button--quiet" type="button" data-clear-media><?= jy_pwa_h(jy_pwa_t('Clear')) ?></button><?php endif; ?></div>
-            </div>
-          </article>
+      <div class="pwa-panel-title"><span>04</span><div><h3><?= jy_pwa_h(jy_pwa_t('App icon generator')) ?></h3><p><?= jy_pwa_h(jy_pwa_t('Choose one public Media Library image and generate every PNG icon automatically.')) ?></p></div></div>
+      <div class="pwa-icon-builder" data-icon-source data-default-preview="<?= jy_pwa_h(JY_PWA_DEFAULT_ICON_512) ?>">
+        <div class="pwa-source-preview"><img src="<?= jy_pwa_h($settings['icon_source_url'] !== '' ? $settings['icon_source_url'] : $settings['icon_512_url']) ?>" alt="" data-source-preview></div>
+        <div class="pwa-source-controls">
+          <label><span><?= jy_pwa_h(jy_pwa_t('Source image')) ?></span>
+            <input type="hidden" name="icon_source_id" value="<?= (int)$settings['icon_source_id'] ?>" data-media-id>
+            <input type="text" name="icon_source_url" value="<?= jy_pwa_h($settings['icon_source_url']) ?>" data-media-url aria-label="<?= jy_pwa_h(jy_pwa_t('Source image URL')) ?>">
+            <small><?= jy_pwa_h(jy_pwa_t('Choose any public image. Its dimensions and aspect ratio do not need to match the generated icons.')) ?></small>
+          </label>
+          <div class="pwa-icon-actions"><button class="pwa-button pwa-button--secondary" type="button" data-choose-media><?= jy_pwa_h(jy_pwa_t('Choose image')) ?></button><button class="pwa-button pwa-button--quiet" type="button" data-clear-media><?= jy_pwa_h(jy_pwa_t('Use bundled default')) ?></button></div>
+          <fieldset class="pwa-fit-options"><legend><?= jy_pwa_h(jy_pwa_t('Image fit')) ?></legend>
+            <label><input type="radio" name="icon_mode" value="crop" <?= $settings['icon_mode'] === 'crop' ? 'checked' : '' ?>><span><strong><?= jy_pwa_h(jy_pwa_t('Crop to fill')) ?></strong><small><?= jy_pwa_h(jy_pwa_t('Fills the icon and crops overflow from the center.')) ?></small></span></label>
+            <label><input type="radio" name="icon_mode" value="contain" <?= $settings['icon_mode'] === 'contain' ? 'checked' : '' ?>><span><strong><?= jy_pwa_h(jy_pwa_t('Fit with padding')) ?></strong><small><?= jy_pwa_h(jy_pwa_t('Keeps the whole image and fills empty space with the background color.')) ?></small></span></label>
+          </fieldset>
+        </div>
+      </div>
+      <div class="pwa-generated-icons" aria-label="<?= jy_pwa_h(jy_pwa_t('Generated icons')) ?>">
+        <?php foreach ([
+            'icon_180' => [jy_pwa_t('Apple touch icon'), '180x180'],
+            'icon_192' => [jy_pwa_t('Standard icon'), '192x192'],
+            'icon_512' => [jy_pwa_t('Large icon'), '512x512'],
+            'icon_maskable' => [jy_pwa_t('Maskable icon'), '512x512'],
+        ] as $key => [$label, $dimensions]): ?>
+          <article><img src="<?= jy_pwa_h($settings[$key . '_url']) ?>" alt=""><span><strong><?= jy_pwa_h($label) ?></strong><small><?= $dimensions ?> PNG</small></span></article>
         <?php endforeach; ?>
       </div>
     </section>
