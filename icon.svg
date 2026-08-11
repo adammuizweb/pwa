@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">Progressive Web App</title>
+  <rect width="512" height="512" rx="112" fill="#172554"/>
+  <path d="M82 126h348v260H82z" fill="#fff" opacity=".08"/>
+  <path d="M112 154h288v204H112z" fill="none" stroke="#8eabff" stroke-width="20"/>
+  <path d="M159 304l58-118h42l-22 47h68l-71 125 20-79h-69l-26 25z" fill="#fff"/>
+  <circle cx="361" cy="196" r="22" fill="#f4b942"/>
+</svg>

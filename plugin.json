@@ -1,0 +1,56 @@
+{
+  "name": "pwa",
+  "version": "1.0.0",
+  "title": "Progressive Web App",
+  "description": "Makes a Jyavani site installable with a configurable web app manifest, root service worker, safe offline fallback, and conservative public asset caching.",
+  "author": "Adam Muiz",
+  "author_uri": "https://jyavani.com/member/adammuiz/",
+  "plugin_uri": "https://jyavani.com/plugin/pwa/",
+  "homepage": "https://github.com/adammuizweb/pwa",
+  "github_url": "https://github.com/adammuizweb/pwa",
+  "license": "MIT",
+  "icon": "icon.png",
+  "store": {
+    "url": "https://jyavani.com/plugin-store",
+    "slug": "pwa"
+  },
+  "requires": {
+    "jyavani": ">=2.3.60",
+    "php": ">=8.1",
+    "extensions": ["pdo", "json", "mbstring"],
+    "plugins": {}
+  },
+  "dependencies": {
+    "js": ["modal-helpers", "media-selector"]
+  },
+  "admin": {
+    "pages": [
+      {
+        "route": "admin/settings/pwa",
+        "file": "admin/settings.php",
+        "title": "Progressive Web App",
+        "roles": ["admin"]
+      }
+    ],
+    "nav": [
+      {
+        "label": "Progressive Web App",
+        "icon": "smartphone",
+        "page": "admin/settings/pwa",
+        "parent": "settings",
+        "roles": ["admin"]
+      }
+    ]
+  },
+  "static": {
+    "copy": [
+      {"from": "assets/css/admin.css", "to": "static/plugins/pwa/admin.css"},
+      {"from": "assets/js/admin.js", "to": "static/plugins/pwa/admin.js"},
+      {"from": "assets/js/register.js", "to": "static/plugins/pwa/register.js"},
+      {"from": "assets/icons/icon-180.png", "to": "static/plugins/pwa/icon-180.png"},
+      {"from": "assets/icons/icon-192.png", "to": "static/plugins/pwa/icon-192.png"},
+      {"from": "assets/icons/icon-512.png", "to": "static/plugins/pwa/icon-512.png"},
+      {"from": "assets/icons/icon-maskable-512.png", "to": "static/plugins/pwa/icon-maskable-512.png"}
+    ]
+  }
+}
