@@ -24,8 +24,8 @@ $check = static function (bool $passed, string $message) use (&$failures): void 
 $manifest = json_decode((string)file_get_contents($root . '/plugin.json'), true, 512, JSON_THROW_ON_ERROR);
 $manifestObject = json_decode((string)file_get_contents($root . '/plugin.json'), false, 512, JSON_THROW_ON_ERROR);
 $check(($manifest['name'] ?? null) === 'pwa', 'plugin slug is pwa');
-$check(($manifest['version'] ?? null) === '1.1.0', 'plugin version is 1.1.0');
-$check(($manifest['requires']['jyavani'] ?? null) === '>=2.3.60', 'Jyavani requirement is explicit');
+$check(($manifest['version'] ?? null) === '1.1.1', 'plugin version is 1.1.1');
+$check(($manifest['requires']['jyavani'] ?? null) === '>=2.3.74', 'Jyavani requirement includes permission policy metadata support');
 $check(in_array('mbstring', $manifest['requires']['extensions'] ?? [], true), 'mbstring requirement is explicit');
 $check(in_array('gd', $manifest['requires']['extensions'] ?? [], true), 'GD requirement is explicit');
 $check(array_key_exists('plugins', $manifest['requires'] ?? []), 'requires.plugins exists');
@@ -33,6 +33,14 @@ $check(($manifestObject->requires->plugins ?? null) instanceof stdClass, 'requir
 $check(!array_key_exists('assets', $manifest), 'admin CSS and JS are not global plugin assets');
 $check(($manifest['github_url'] ?? null) === 'https://github.com/adammuizweb/pwa', 'repository URL is canonical');
 $check(($manifest['admin']['nav'][0]['label'] ?? null) === 'PWA', 'settings navigation uses the short PWA label');
+$permission = $manifest['permissions'][0] ?? [];
+$check(($permission['key'] ?? null) === 'plugin.pwa.settings.manage'
+    && ($permission['default_roles'] ?? null) === ['admin']
+    && ($permission['delegable'] ?? null) === false, 'PWA settings permission is nondelegable and defaults to admin');
+$check(($manifest['admin']['pages'][0]['roles'] ?? null) === $permission['default_roles'], 'PWA route roles match the permission defaults');
+$adminPage = (string)file_get_contents($root . '/admin/settings.php');
+$check(str_contains($adminPage, "defined('DASHBOARD_CONTEXT')"), 'PWA settings page requires dashboard context');
+$check(str_contains($adminPage, "adiwira_require_permission(\$pdo, 'plugin.pwa.settings.manage', false)"), 'PWA settings page repeats its permission guard');
 $check(isset($GLOBALS['_test_routes']['manifest.webmanifest']), 'dynamic manifest route is registered');
 $check(isset($GLOBALS['_test_hooks']['service_worker_script']), 'service worker contribution is registered');
 $check(isset($GLOBALS['_test_hooks']['web_manifest_url']), 'Core web_manifest_url filter is registered');

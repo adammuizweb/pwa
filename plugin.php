@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 if (!defined('BACKEND_PATH')) return;
 
-const JY_PWA_VERSION = '1.1.0';
+const JY_PWA_VERSION = '1.1.1';
 const JY_PWA_STATIC = '/static/plugins/pwa';
 const JY_PWA_DEFAULT_ICON_180 = JY_PWA_STATIC . '/icon-180.png';
 const JY_PWA_DEFAULT_ICON_192 = JY_PWA_STATIC . '/icon-192.png';

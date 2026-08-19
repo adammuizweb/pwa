@@ -1,11 +1,14 @@
 <?php
 declare(strict_types=1);
 
+if (!defined('DASHBOARD_CONTEXT')) exit;
+
 $pdo = $GLOBALS['pdo'] ?? null;
 if (!$pdo instanceof PDO) {
     echo '<p>' . jy_pwa_h(jy_pwa_t('Database not available.')) . '</p>';
     return;
 }
+adiwira_require_permission($pdo, 'plugin.pwa.settings.manage', false);
 
 $settings = jy_pwa_settings($pdo);
 $errors = [];

@@ -1,10 +1,10 @@
 # Jyavani Progressive Web App
 
-PWA v1.1.0 makes a Jyavani frontend installable without taking ownership of Core paths or another plugin's service worker handlers.
+PWA v1.1.1 makes a Jyavani frontend installable without taking ownership of Core paths or another plugin's service worker handlers.
 
 ## Requirements
 
-- Jyavani 2.3.60 or newer
+- Jyavani 2.3.74 or newer
 - PHP 8.1 or newer with PDO, JSON, mbstring, and GD
 - HTTPS in production (browsers allow service workers on localhost for development)
 

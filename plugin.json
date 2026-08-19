@@ -1,6 +1,6 @@
 {
   "name": "pwa",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "title": "Progressive Web App",
   "description": "Makes a Jyavani site installable with a configurable web app manifest, root service worker, safe offline fallback, and conservative public asset caching.",
   "author": "Adam Muiz",
@@ -15,7 +15,7 @@
     "slug": "pwa"
   },
   "requires": {
-    "jyavani": ">=2.3.60",
+    "jyavani": ">=2.3.74",
     "php": ">=8.1",
     "extensions": ["pdo", "json", "mbstring", "gd"],
     "plugins": {}
@@ -23,12 +23,22 @@
   "dependencies": {
     "js": ["modal-helpers", "media-selector"]
   },
+  "permissions": [
+    {
+      "key": "plugin.pwa.settings.manage",
+      "label": "Manage Progressive Web App Settings",
+      "supports_scope": false,
+      "default_roles": ["admin"],
+      "delegable": false
+    }
+  ],
   "admin": {
     "pages": [
       {
         "route": "admin/settings/pwa",
         "file": "admin/settings.php",
         "title": "Progressive Web App",
+        "permission": "plugin.pwa.settings.manage",
         "roles": ["admin"]
       }
     ],
